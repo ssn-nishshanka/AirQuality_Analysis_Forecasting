@@ -1,0 +1,385 @@
+---
+title: "AirQualityAnalysisForecasting"
+author: "ssn-nishshanka"
+date: "2025-01-27"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(tseries)
+library(parallel)
+library(ggplot2)
+```
+
+```{r}
+data <- read_csv(file.choose())
+```
+
+```{r}
+glimpse(data)
+summary(data)
+```
+
+```{r}
+# checking the structure of the dataset to see the format of the date column
+str(data)
+```
+```{r}
+# the date column is correctly in date format so it can be left as it is
+```
+
+```{r}
+sum(is.na(data$co)) # checking if there are any missing values in the co data column
+```
+
+```{r}
+# there are 8 missing values
+# replacing of the missing values with the median of co
+median_co <- median(data$co, na.rm = TRUE)
+data <- data %>%
+  mutate(co = ifelse(is.na(co), median_co, co))  
+```
+
+
+```{r}
+# visualizing to see outliers by using boxplot
+boxplot(data$co, main = "Boxplot of CO Levels", ylab = "CO")
+```
+
+
+```{r}
+# outliers are present as seen by the boxplot
+# calculating of first and third quantile and the iqr
+Q1 <- quantile(data$co, 0.25, na.rm = TRUE)
+Q3 <- quantile(data$co, 0.75, na.rm = TRUE)
+IQR_value <- IQR(data$co, na.rm = TRUE)
+
+# the boundaries of the outliers 
+lower_bound <- Q1 - 1.5 * IQR_value
+upper_bound <- Q3 + 1.5 * IQR_value 
+
+# replacing the outliers by using the median of co
+data <- data %>%
+  mutate(co = ifelse(co < lower_bound | co > upper_bound, median_co, co))
+```
+
+
+```{r}
+# the data in the dataset is daily so we will perform the necessary transformations by aggregating the daily data to monthly averages
+```
+
+```{r}
+# aggregating the daily data to monthly averages
+monthly_data <- data %>%
+  mutate(month = floor_date(tanggal, "month")) %>%
+  group_by(month) %>%
+  summarise(monthly_co = mean(co, na.rm = TRUE))  # calculating the monthly average of co values
+
+# first few rows of the monthly data
+head(monthly_data)
+```
+
+```{r}
+# performing exploratory Data Analysis for the data
+
+# visualizing the time series data for co
+
+# plotting the monthly co data
+ggplot(monthly_data, aes(x = month, y = monthly_co)) +
+  geom_line(color = "blue") +
+  labs(title = "Monthly CO Levels", x = "Month", y = "Monthly CO Level (µg/m³)") +
+  theme_minimal()
+```
+
+```{r}
+# the plot shows a overall downward trend and shows seasonality. The recurring patterns are visible suggesting a seasonal component. The visualization shows non stationary as it has both trend and seasonality and therefore it does not have a constant mean and variance over time as shown by the plot.
+```
+
+```{r}
+# decomposing the time series to identify the trend, seasonality and residuals
+
+# converting the data to a time series object for decomposition
+monthly_ts <- ts(monthly_data$monthly_co, frequency = 12, start = c(2010, 1))  # since monthly data is starting from Jan 2010
+
+# using STL decomposition for robustness
+decomposed_ts_stl <- stl(monthly_ts, s.window = "periodic")
+
+# plotting the decomposed time series for trend, seasonal and residuals
+plot(decomposed_ts_stl)
+
+# extracting and plotting the individual components
+trend <- decomposed_ts_stl$time.series[, "trend"]
+seasonal <- decomposed_ts_stl$time.series[, "seasonal"]
+residuals <- decomposed_ts_stl$time.series[, "remainder"]
+
+plot(trend, main = "Trend")
+plot(seasonal, main = "Seasonal")
+plot(residuals, main = "Residuals")
+```
+
+```{r}
+# the visualization shows the decomposed result in four plots as shown. The first plot displays the original time series data by showing the monthly co levels from 2010 to 2023. it exhibits clear fluctuations over time. the second panel shows the seasonal component. this part of the decomposition captures the repeating patterns within the data. it indicates that there are regular seasonal fluctuations in CO levels. the third panel shows the trend component. it represents the long term movement of the series. in this plot the trend shows a slight initial increase in CO levels peaking around 2016 followed by a decline towards 2023. this long term movement reflects underlying changes in CO levels that are not attributed to seasonal effects or random noise. the bottom panel displays the remainder or residual component. this represents the noise or random variation left after removing the seasonal and trend components. the residuals fluctuate around zero indicating that these are irregular variations not explained by the trend or seasonality. these residuals are important for understanding the variability in the data that can't be predicted by seasonal or trend patterns.
+```
+
+```{r}
+# computing basic statistical properties such as the mean, variance and autocorrelation
+
+# autocorrelation (ACF)
+acf(monthly_ts, main = "Autocorrelation of Monthly CO Levels")
+```
+
+```{r}
+# the acf plot of the monthly co levels show a slow decrease of the bars as the lag increases showing the trend in co over the time. this shows non stationarity. being non stationary means that the mean and variance change over time. differencing needs to be done to make this stationary.
+```
+
+
+```{r}
+# partial autocorrelation (PACF)
+pacf(monthly_ts, main = "Partial Autocorrelation of Monthly CO Levels")
+```
+
+```{r}
+# this pacf plot is for non stationary data. since the series is non stationary differencing needs to be done to achieve stationarity.
+```
+
+
+```{r}
+# mean and variance
+mean_co <- mean(monthly_data$monthly_co, na.rm = TRUE)
+variance_co <- var(monthly_data$monthly_co, na.rm = TRUE)
+
+cat("Mean of CO Levels:", mean_co, "\n")
+cat("Variance of CO Levels:", variance_co, "\n")
+```
+
+```{r}
+# performing the Augmented Dickey Fuller (ADF) test on the monthly CO data
+adf_result <- adf.test(monthly_data$monthly_co, alternative = "stationary")
+
+print(adf_result)
+```
+
+```{r}
+# the p value is 0.0995 it is greater then the threshold 0.05 so the null hyopthesis is not rejected. this means the time series is non stationary. so we need to differentiate and remove trend and seasonality which helps to make it stationary.
+```
+
+
+```{r}
+# apply first differencing to remove the trend
+monthly_diff <- diff(monthly_ts, differences = 1)
+
+# plot ACF and PACF for the differenced data
+par(mfrow = c(1, 2))
+acf(monthly_diff, main = "ACF of Differenced Monthly CO Data")
+pacf(monthly_diff, main = "PACF of Differenced Monthly CO Data")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# the first order differencing has removed the trend as seen by the acf. the acf plot shows the first lag is significant with it being significantly above the threshold while the other lags are within the threshold. so there is one significant lag therefore the q value (moving average order) is 1. the pacf plot has three significant lags therefore the p value (autoregressive order) is 3.
+```
+
+
+```{r}
+# perform the ADF test on differenced data
+adf_result_diff <- adf.test(monthly_diff, alternative = "stationary")
+print(adf_result_diff)
+```
+
+```{r}
+# the p value is now 0.01 so it is less than the 0.05 threshold therefore the null hypothesis is rejected and alternative hypothesis is accepted which means that the time series is stationary.
+```
+
+
+```{r}
+# splitting data into training and testing sets so that we can evaluate the model's accuracy in predictions. the training data helps the model learn patterns and testing data checks if the model predictis correctly.
+
+# taking the first 80% of the dataset as the training data
+train_size <- round(length(monthly_diff) * 0.8)
+train_data <- monthly_diff[1:train_size]
+
+# then the remaining 20% of the data will be for the testing data
+test_data <- monthly_diff[(train_size + 1):length(monthly_diff)]
+
+# ensuring train_data is a time series object
+train_start_year <- start(monthly_diff)[1] + (start(monthly_diff)[2] - 1) / 12
+train_data <- ts(train_data, frequency = 12, start = c(train_start_year))
+```
+
+
+```{r}
+# fitting ARIMA model to the differenced data
+
+fit_arima <- arima(train_data, order = c(3, 1, 1)) 
+
+# the order is 3, 1, 1 as p is 3 as seen by pacf of differenced data, d is 1 as only first order differencing done and q is 1 as seen by the acf plot of difference data.
+
+summary(fit_arima)
+```
+
+```{r}
+checkresiduals(fit_arima)
+```
+
+```{r}
+# checking residuals (errors) lets to see if the model fits well. for a good model the residuals should be random, no significant autocorrelation and should be normally distributed. the arima (3, 1, 1) model residuals visualizations show the residuals randomly fluctuate around zero, most autocorrelation fall within the confidence intervals so little significant autocorrelation of residuals and the histogram of residuals show that the residuals are roughly normally distributed. but the Ljung Box test having a low p value below 0.05 threshold means the null hypothesis is rejected. the null hypothesis says that there is no autocorrelation so this shows that residuals still have some autocorrelation.
+```
+
+
+```{r}
+# applying seasonal differencing to the first order differenced data to remove the seasonality as well
+monthly_diff_seasonal <- diff(monthly_diff, lag = 12)
+```
+
+```{r}
+# splitting the data agian for first order differenced and seasonal differenced data to create seperate training and testing sets. the combined differencing helps remove both trend and seasonal effects showing clearer underlying patterns. 
+
+# the first 80% data is the training data
+train_size_seasonal <- round(length(monthly_diff_seasonal) * 0.8)
+train_data_seasonal <- monthly_diff_seasonal[1:train_size_seasonal]
+
+# the remaining 20% data is the testing data
+test_data_seasonal <- monthly_diff_seasonal[(train_size_seasonal + 1):length(monthly_diff_seasonal)]
+
+# ensuring train_data_seasonal is a time series object
+train_start_year_seasonal <- start(monthly_diff_seasonal)[1] + (start(monthly_diff_seasonal)[2] - 1) / 12
+train_data_seasonal <- ts(train_data_seasonal, frequency = 12, start = c(train_start_year_seasonal))
+```
+
+
+```{r}
+# first order and seasonal differenced ACF and PACF plots
+par(mfrow = c(1, 2))
+acf(train_data_seasonal, main = "Seasonal ACF of Differenced Data")
+pacf(train_data_seasonal, main = "Seasonal PACF of Differenced Data")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# the first order differencing has removed the trend and seasonal differencing was applied to remove seasonality. the acf plot shows the first lag is significant with it being significantly above the threshold while the other lags are within the threshold. so there is one significant lag therefore the seasonal Q value (moving average order) is 1. the pacf plot has two significant lags therefore the seasonal P value (autoregressive order) is 2.
+```
+
+
+```{r}
+# performing of the ADF test on seasonally differenced data
+adf_result_seasonal <- adf.test(monthly_diff_seasonal, alternative = "stationary")
+print(adf_result_seasonal)
+```
+
+
+```{r}
+# fitting SARIMA model to the differenced data
+
+fit_sarima <- arima(train_data_seasonal, order = c(3, 1, 1), seasonal = list(order = c(2, 1, 1), period = 12))
+
+# the order is 3, 1, 1 and 2, 1, 1. p is 3 as seen by pacf of differenced data, d is 1 as only first order differencing done and q is 1 as seen by the acf plot of difference data. P is 2 as seen by pacf of seasonal differenced data, D is 1 as seasonal differencing was done once and Q is 1 as seen by the acf of seasonal differenced data.
+
+summary(fit_sarima)
+```
+
+```{r}
+checkresiduals(fit_sarima)
+```
+
+```{r}
+# the sarima (3, 1, 1)(2, 1, 1) model fits the data well as seen by the visualizations as the residuals randomly fluctuate around zero, autocorrelation fall within the confidence intervals so no significant autocorrelation of residuals and the histogram of residuals show that the residuals are roughly normally distributed. additionally the Ljung Box test has a p value above 0.05 which means we fail to reject the null hypothesis. this means that according to Ljung Box test there is no significant autocorrelation in the residuals. this means that the sarima model is a good fit.
+```
+
+
+```{r}
+# fitting the Exponential Smoothing model
+
+fit_ets <- ets(train_data_seasonal)
+
+summary(fit_ets)
+```
+
+```{r}
+checkresiduals(fit_ets)
+```
+
+```{r}
+# for the ets model the visualizations show the residuals randomly fluctuate around zero, most autocorrelation fall within the confidence intervals so little significant autocorrelation of residuals and the histogram of residuals show that the residuals are roughly normally distributed. meanwhile the Ljung Box test has a p value less than 0.05 which means reject the null hypothesis. this means that according to Ljung Box test there is some significant autocorrelation in the residuals.
+```
+
+
+```{r}
+# cross validation to select the best model
+
+# each model was fit to the training data
+
+# forecast from each model
+arima_forecast <- forecast(fit_arima, h = length(test_data)) # forecasting each for the same length as test data
+sarima_forecast <- forecast(fit_sarima, h = length(test_data))
+ets_forecast <- forecast(fit_ets, h = length(test_data))
+
+# calculating the accuracy metrics
+arima_accuracy <- accuracy(arima_forecast, test_data) # to compare the forecasts to test data
+sarima_accuracy <- accuracy(sarima_forecast, test_data)
+ets_accuracy <- accuracy(ets_forecast, test_data)
+
+print(arima_accuracy)
+print(sarima_accuracy)
+print(ets_accuracy)
+```
+
+```{r}
+# mainly the RMSE and MAE of the test set should be used to find the best model. sarima has the lowest RMSE which means it has the least overall error in forecasts. sarima also has the lowest MAE so its absolute error is slightly better. arima however has the lowest MAPE which means it has better precentage error than sarima and ets. still RMSE and MAE are more critical in chosing the best model therefore sarima is the best model for forecasting.
+```
+
+
+```{r}
+# making test_data_seasonal a time series object
+test_data_ts <- ts(test_data_seasonal, frequency = 12, start = start(train_data_seasonal) + c(0, length(train_data_seasonal) / 12))
+
+# forecasting by using the SARIMA model
+sarima_forecast <- forecast(fit_sarima, h = length(test_data_seasonal))
+
+# plotting the forecast and adding the actual test data
+plot(sarima_forecast, main = "SARIMA Forecast vs Actual Data", xlab = "Month", ylab = "CO Levels")
+lines(test_data_ts, col = "red", lwd = 2)  # adding the actual test data
+```
+
+```{r}
+# the forecasted data align with the actual data with only some fluctuations so the sarima model performs relatively well with predicting of the co levels. the larger confidence intervals to the right highlight the increased uncertainity in the forecast as the time increases.
+```
+
+```{r}
+# forecast of co for the next 5 years
+
+years_to_forecast <- 5
+frequency <- 12  # as it is monthly data 
+horizon <- years_to_forecast * frequency
+
+# generating the 5 year forecast by using the SARIMA model
+sarima_5yr_forecast <- forecast(fit_sarima, h = horizon)
+
+# plotting the forecast
+plot(sarima_5yr_forecast, main = "5 Year SARIMA Forecast", xlab = "Month", ylab = "CO Levels")
+lines(test_data_ts, col = "red", lwd = 2)  # adding the actual test data to the plot
+```
+
+
+```{r}
+# evaluating of the forecast accuracy
+accuracy_metrics <- accuracy(sarima_forecast, test_data_seasonal)
+
+print(accuracy_metrics)
+
+mae <- accuracy_metrics["Test set", "MAE"]
+rmse <- accuracy_metrics["Test set", "RMSE"]
+mape <- accuracy_metrics["Test set", "MAPE"]
+
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "\n")
+```
+
+```{r}
+# the RMSE and MAE  are slightly higher in the test set compared to the training set so the model performs slightly worse on unseen data. the high MAPE values in both training and test set show that forecast errors are noticable in precentages which could be due to the variablity in co levels.
+```
+
+
